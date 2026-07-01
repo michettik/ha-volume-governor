@@ -184,6 +184,14 @@ class VolumeGovernorOptionsFlow(config_entries.OptionsFlow):
         """Manage the options - device selection."""
         self._discovered_devices = _discover_audio_devices(self.hass)
 
+        # Ensure currently-configured devices are always in the options list
+        # even if they're currently unavailable/idle and not reporting VOLUME_SET
+        for dev in self.config_entry.data.get(CONF_DEVICES, []):
+            eid = dev[CONF_DEVICE_ENTITY_ID]
+            if eid not in self._discovered_devices:
+                name = dev.get(CONF_DEVICE_NAME, eid)
+                self._discovered_devices[eid] = f"{name} (unavailable)"
+
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
 

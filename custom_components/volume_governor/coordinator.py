@@ -169,6 +169,11 @@ class VolumeGovernorCoordinator:
     async def _async_enforce(self, entity_id: str, cap: float) -> None:
         """Set volume back to cap."""
         try:
+            # Re-check engaged state right before enforcement — if user disengaged
+            # between the event fire and this task running, bail out
+            device = self.devices.get(entity_id)
+            if not device or not device.engaged:
+                return
             await self.hass.services.async_call(
                 MP_DOMAIN,
                 SERVICE_VOLUME_SET,
@@ -219,7 +224,16 @@ class VolumeGovernorCoordinator:
 
         device.engaged = False
         device.lift_at = None
+        # Add to enforcing set briefly to block any in-flight state-change callbacks
+        self._enforcing.add(entity_id)
+        self.hass.async_create_task(self._async_clear_enforcing(entity_id))
         _LOGGER.info("Volume Governor: disengaged %s", entity_id)
+
+    async def _async_clear_enforcing(self, entity_id: str) -> None:
+        """Clear enforcing flag after a short delay to let in-flight events pass."""
+        import asyncio
+        await asyncio.sleep(1)
+        self._enforcing.discard(entity_id)
 
     def set_persistent(self, entity_id: str, persistent: bool) -> None:
         """Set or clear persistent mode."""

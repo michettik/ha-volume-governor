@@ -1,8 +1,18 @@
-"""Volume Governor coordinator - the enforcement engine."""
+"""Volume Governor coordinator - the enforcement engine.
+
+Core design:
+- Devices are discovered via config flow (media_player entities with VOLUME_SET)
+- Dashboard shows all governed devices; tap the switch to ENGAGE the governor
+- Governance schedule applies on configured days only (default Mon-Fri)
+- When engaged (ad-hoc or scheduled), volume is capped at the configured level
+- Ad-hoc engagement auto-lifts at the schedule_end time the NEXT day
+- Persistent mode keeps enforcement running until manually toggled off
+- Real-time enforcement via state change listeners (no polling needed)
+"""
 from __future__ import annotations
 
 import logging
-from datetime import time, datetime
+from datetime import time, datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -21,18 +31,15 @@ from homeassistant.components.media_player import (
 from .const import (
     CONF_DEVICES,
     CONF_DEVICE_ENTITY_ID,
-    CONF_ADHOC_CAP,
-    CONF_ADHOC_LIFT_TIME,
-    CONF_SCHEDULE_ENABLED,
+    CONF_SCHEDULE_DAYS,
     CONF_SCHEDULE_START,
     CONF_SCHEDULE_END,
-    CONF_SCHEDULE_CAP,
+    CONF_DEFAULT_CAP,
     CONF_CAP_FLOOR,
-    DEFAULT_ADHOC_CAP,
-    DEFAULT_ADHOC_LIFT_TIME,
-    DEFAULT_SCHEDULE_CAP,
+    DEFAULT_SCHEDULE_DAYS,
     DEFAULT_SCHEDULE_START,
     DEFAULT_SCHEDULE_END,
+    DEFAULT_CAP,
     DEFAULT_CAP_FLOOR,
 )
 
@@ -44,37 +51,16 @@ ACTIVE_STATES = {STATE_ON, STATE_PLAYING, STATE_IDLE, STATE_PAUSED}
 class GovernedDevice:
     """State and config for a single governed device."""
 
-    def __init__(self, entity_id: str, config: dict[str, Any]) -> None:
+    def __init__(self, entity_id: str, name: str) -> None:
         """Initialize."""
         self.entity_id = entity_id
-        self.adhoc_active: bool = False
-        self.adhoc_cap: float = config.get(CONF_ADHOC_CAP, DEFAULT_ADHOC_CAP)
-        self.adhoc_lift_time: time = _parse_time(
-            config.get(CONF_ADHOC_LIFT_TIME, DEFAULT_ADHOC_LIFT_TIME)
-        )
-        self.schedule_enabled: bool = config.get(CONF_SCHEDULE_ENABLED, False)
-        self.schedule_start: time = _parse_time(
-            config.get(CONF_SCHEDULE_START, DEFAULT_SCHEDULE_START)
-        )
-        self.schedule_end: time = _parse_time(
-            config.get(CONF_SCHEDULE_END, DEFAULT_SCHEDULE_END)
-        )
-        self.schedule_cap: float = config.get(CONF_SCHEDULE_CAP, DEFAULT_SCHEDULE_CAP)
-        self.cap_floor: float = config.get(CONF_CAP_FLOOR, DEFAULT_CAP_FLOOR)
-
-    @property
-    def effective_cap(self) -> float | None:
-        """Return the lowest active cap, or None if no cap is active."""
-        caps: list[float] = []
-        if self.adhoc_active:
-            caps.append(self.adhoc_cap)
-        if self.schedule_enabled and _in_time_range(
-            datetime.now().time(), self.schedule_start, self.schedule_end
-        ):
-            caps.append(self.schedule_cap)
-        if not caps:
-            return None
-        return max(min(caps), self.cap_floor)
+        self.name = name
+        # Runtime state
+        self.engaged: bool = False
+        self.persistent: bool = False
+        self.cap: float = DEFAULT_CAP
+        # Computed: when the current engagement should auto-lift
+        self.lift_at: datetime | None = None
 
 
 class VolumeGovernorCoordinator:
@@ -85,16 +71,28 @@ class VolumeGovernorCoordinator:
         self.hass = hass
         self.entry = entry
         self.devices: dict[str, GovernedDevice] = {}
+
+        # Global schedule config
+        data = entry.data
+        self.schedule_days: list[int] = data.get(CONF_SCHEDULE_DAYS, DEFAULT_SCHEDULE_DAYS)
+        self.schedule_start: time = _parse_time(data.get(CONF_SCHEDULE_START, DEFAULT_SCHEDULE_START))
+        self.schedule_end: time = _parse_time(data.get(CONF_SCHEDULE_END, DEFAULT_SCHEDULE_END))
+        self.default_cap: float = data.get(CONF_DEFAULT_CAP, DEFAULT_CAP)
+        self.cap_floor: float = data.get(CONF_CAP_FLOOR, DEFAULT_CAP_FLOOR)
+
         self._unsub_state: CALLBACK_TYPE | None = None
-        self._unsub_lift_listeners: list[CALLBACK_TYPE] = []
-        self._enforcing: set[str] = set()  # prevent re-entrancy
+        self._unsub_lift_check: CALLBACK_TYPE | None = None
+        self._enforcing: set[str] = set()
 
     async def async_setup(self) -> None:
         """Set up the coordinator: register listeners."""
         devices_config = self.entry.data.get(CONF_DEVICES, [])
         for dev_conf in devices_config:
             entity_id = dev_conf[CONF_DEVICE_ENTITY_ID]
-            self.devices[entity_id] = GovernedDevice(entity_id, dev_conf)
+            name = dev_conf.get("name", entity_id)
+            device = GovernedDevice(entity_id, name)
+            device.cap = self.default_cap
+            self.devices[entity_id] = device
 
         # Listen for state changes on all governed entities
         entity_ids = list(self.devices.keys())
@@ -103,45 +101,36 @@ class VolumeGovernorCoordinator:
                 self.hass, entity_ids, self._async_on_state_change
             )
 
-        # Set up ad-hoc lift timers for each device
-        for device in self.devices.values():
-            unsub = async_track_time_change(
-                self.hass,
-                self._make_lift_callback(device.entity_id),
-                hour=device.adhoc_lift_time.hour,
-                minute=device.adhoc_lift_time.minute,
-                second=0,
-            )
-            self._unsub_lift_listeners.append(unsub)
+        # Check every minute at :00 for auto-lift
+        self._unsub_lift_check = async_track_time_change(
+            self.hass, self._async_check_lifts, second=0
+        )
 
     async def async_teardown(self) -> None:
         """Tear down listeners."""
         if self._unsub_state:
             self._unsub_state()
             self._unsub_state = None
-        for unsub in self._unsub_lift_listeners:
-            unsub()
-        self._unsub_lift_listeners.clear()
+        if self._unsub_lift_check:
+            self._unsub_lift_check()
+            self._unsub_lift_check = None
 
     @callback
-    def _make_lift_callback(self, entity_id: str):
-        """Create a time-based callback to lift ad-hoc cap for a specific device."""
-
-        @callback
-        def _lift_adhoc(_now: datetime) -> None:
-            device = self.devices.get(entity_id)
-            if device and device.adhoc_active:
-                device.adhoc_active = False
-                _LOGGER.info(
-                    "Volume Governor: ad-hoc cap lifted for %s at scheduled time",
-                    entity_id,
-                )
-                # Fire event so entities update
-                self.hass.bus.async_fire(
-                    "volume_governor_updated", {"entity_id": entity_id}
-                )
-
-        return _lift_adhoc
+    def _async_check_lifts(self, _now: datetime) -> None:
+        """Check if any engaged devices should be auto-lifted."""
+        now = datetime.now()
+        for device in self.devices.values():
+            if device.engaged and not device.persistent and device.lift_at:
+                if now >= device.lift_at:
+                    device.engaged = False
+                    device.lift_at = None
+                    _LOGGER.info(
+                        "Volume Governor: auto-lifted %s (schedule end reached)",
+                        device.entity_id,
+                    )
+                    self.hass.bus.async_fire(
+                        "volume_governor_updated", {"entity_id": device.entity_id}
+                    )
 
     @callback
     def _async_on_state_change(self, event: Event) -> None:
@@ -158,14 +147,15 @@ class VolumeGovernorCoordinator:
         if not device:
             return
 
-        cap = device.effective_cap
-        if cap is None:
+        # Only enforce if device is engaged
+        if not device.engaged:
             return
 
         current_volume = new_state.attributes.get(ATTR_MEDIA_VOLUME_LEVEL)
         if current_volume is None:
             return
 
+        cap = max(device.cap, self.cap_floor)
         if current_volume > cap:
             _LOGGER.info(
                 "Volume Governor: %s at %.3f exceeds cap %.3f, enforcing",
@@ -193,38 +183,74 @@ class VolumeGovernorCoordinator:
         finally:
             self._enforcing.discard(entity_id)
 
-    def set_adhoc(self, entity_id: str, active: bool) -> None:
-        """Activate or deactivate ad-hoc mode for a device."""
+    def engage(self, entity_id: str) -> None:
+        """Engage the governor for a device (tap to activate)."""
+        device = self.devices.get(entity_id)
+        if not device:
+            return
+
+        device.engaged = True
+
+        # Compute auto-lift time: next occurrence of schedule_end
+        if not device.persistent:
+            device.lift_at = self._compute_lift_time()
+
+        _LOGGER.info(
+            "Volume Governor: engaged %s (cap=%d%%, lift_at=%s, persistent=%s)",
+            entity_id,
+            int(device.cap * 100),
+            device.lift_at,
+            device.persistent,
+        )
+
+        # Immediately enforce if currently over cap
+        state = self.hass.states.get(entity_id)
+        if state and state.state in ACTIVE_STATES:
+            current = state.attributes.get(ATTR_MEDIA_VOLUME_LEVEL)
+            cap = max(device.cap, self.cap_floor)
+            if current is not None and current > cap:
+                self.hass.async_create_task(self._async_enforce(entity_id, cap))
+
+    def disengage(self, entity_id: str) -> None:
+        """Disengage the governor for a device."""
+        device = self.devices.get(entity_id)
+        if not device:
+            return
+
+        device.engaged = False
+        device.lift_at = None
+        _LOGGER.info("Volume Governor: disengaged %s", entity_id)
+
+    def set_persistent(self, entity_id: str, persistent: bool) -> None:
+        """Set or clear persistent mode."""
+        device = self.devices.get(entity_id)
+        if not device:
+            return
+
+        device.persistent = persistent
+        if persistent:
+            device.lift_at = None
+        elif device.engaged:
+            device.lift_at = self._compute_lift_time()
+
+        _LOGGER.info(
+            "Volume Governor: %s persistent=%s", entity_id, persistent
+        )
+
+    def set_cap(self, entity_id: str, cap: float) -> None:
+        """Update the cap value for a device."""
         device = self.devices.get(entity_id)
         if device:
-            device.adhoc_active = active
-            _LOGGER.info(
-                "Volume Governor: ad-hoc %s for %s",
-                "activated" if active else "deactivated",
-                entity_id,
-            )
-            # Immediately enforce if turning on
-            if active:
+            device.cap = max(cap, self.cap_floor)
+            # Re-enforce immediately if engaged and over new cap
+            if device.engaged:
                 state = self.hass.states.get(entity_id)
                 if state and state.state in ACTIVE_STATES:
                     current = state.attributes.get(ATTR_MEDIA_VOLUME_LEVEL)
-                    cap = device.effective_cap
-                    if current is not None and cap is not None and current > cap:
+                    if current is not None and current > device.cap:
                         self.hass.async_create_task(
-                            self._async_enforce(entity_id, cap)
+                            self._async_enforce(entity_id, device.cap)
                         )
-
-    def set_adhoc_cap(self, entity_id: str, cap: float) -> None:
-        """Update the ad-hoc cap value for a device."""
-        device = self.devices.get(entity_id)
-        if device:
-            device.adhoc_cap = max(cap, device.cap_floor)
-
-    def set_schedule_cap(self, entity_id: str, cap: float) -> None:
-        """Update the schedule cap value for a device."""
-        device = self.devices.get(entity_id)
-        if device:
-            device.schedule_cap = max(cap, device.cap_floor)
 
     def get_status(self, entity_id: str) -> str:
         """Get human-readable status for a device."""
@@ -232,19 +258,38 @@ class VolumeGovernorCoordinator:
         if not device:
             return "unknown"
 
-        cap = device.effective_cap
-        if cap is None:
-            return "inactive"
+        if not device.engaged:
+            return "idle"
 
-        parts = []
-        if device.adhoc_active:
-            parts.append("ad-hoc")
-        if device.schedule_enabled and _in_time_range(
-            datetime.now().time(), device.schedule_start, device.schedule_end
-        ):
-            parts.append("scheduled")
+        parts = [f"cap: {int(device.cap * 100)}%"]
+        if device.persistent:
+            parts.append("persistent")
+        elif device.lift_at:
+            parts.append(f"lifts: {device.lift_at.strftime('%a %H:%M')}")
 
-        return f"active ({' + '.join(parts)}, cap: {int(cap * 100)}%)"
+        return f"enforcing ({', '.join(parts)})"
+
+    def is_schedule_active(self) -> bool:
+        """Check if current time is within the governance schedule."""
+        now = datetime.now()
+        if now.weekday() not in self.schedule_days:
+            return False
+        return _in_time_range(now.time(), self.schedule_start, self.schedule_end)
+
+    def _compute_lift_time(self) -> datetime:
+        """Compute the next occurrence of schedule_end time."""
+        now = datetime.now()
+        # Target: the next schedule_end time
+        # If schedule crosses midnight (22:00-07:00), lift is the NEXT morning
+        target = now.replace(
+            hour=self.schedule_end.hour,
+            minute=self.schedule_end.minute,
+            second=0,
+            microsecond=0,
+        )
+        if target <= now:
+            target += timedelta(days=1)
+        return target
 
 
 def _parse_time(time_str: str) -> time:

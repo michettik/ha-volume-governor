@@ -1,4 +1,4 @@
-"""Number platform for Volume Governor - adjustable cap levels."""
+"""Number platform for Volume Governor - adjustable cap slider."""
 from __future__ import annotations
 
 import logging
@@ -26,29 +26,20 @@ async def async_setup_entry(
     for dev_conf in entry.data.get(CONF_DEVICES, []):
         entity_id = dev_conf[CONF_DEVICE_ENTITY_ID]
         name = dev_conf[CONF_DEVICE_NAME]
-        # Ad-hoc cap slider
         entities.append(
-            VolumeGovernorCapNumber(
-                coordinator, entity_id, name, entry.entry_id, "adhoc"
-            )
-        )
-        # Schedule cap slider
-        entities.append(
-            VolumeGovernorCapNumber(
-                coordinator, entity_id, name, entry.entry_id, "schedule"
-            )
+            VolumeGovernorCapNumber(coordinator, entity_id, name, entry.entry_id)
         )
 
     async_add_entities(entities)
 
 
 class VolumeGovernorCapNumber(NumberEntity):
-    """Number entity to adjust volume cap level."""
+    """Number entity to adjust the volume cap level per device."""
 
     _attr_has_entity_name = True
     _attr_native_min_value = 5
     _attr_native_max_value = 100
-    _attr_native_step = 1
+    _attr_native_step = 5
     _attr_native_unit_of_measurement = "%"
     _attr_mode = NumberMode.SLIDER
     _attr_icon = "mdi:volume-minus"
@@ -59,18 +50,16 @@ class VolumeGovernorCapNumber(NumberEntity):
         entity_id: str,
         device_name: str,
         entry_id: str,
-        cap_type: str,
     ) -> None:
         """Initialize."""
         self._coordinator = coordinator
         self._governed_entity_id = entity_id
         self._device_name = device_name
-        self._cap_type = cap_type
 
         slug = entity_id.replace(".", "_")
-        self._attr_unique_id = f"volume_governor_{slug}_{cap_type}_cap"
-        self._attr_name = f"Volume Governor {device_name} ({cap_type} cap)"
-        self.entity_id = f"number.volume_governor_{slug}_{cap_type}_cap"
+        self._attr_unique_id = f"volume_governor_{slug}_cap"
+        self._attr_name = f"Governor: {device_name} Cap"
+        self.entity_id = f"number.volume_governor_{slug}_cap"
 
     @property
     def native_value(self) -> float | None:
@@ -78,17 +67,12 @@ class VolumeGovernorCapNumber(NumberEntity):
         device = self._coordinator.devices.get(self._governed_entity_id)
         if not device:
             return None
-        if self._cap_type == "adhoc":
-            return int(device.adhoc_cap * 100)
-        return int(device.schedule_cap * 100)
+        return int(device.cap * 100)
 
     async def async_set_native_value(self, value: float) -> None:
         """Update the cap value."""
         cap = value / 100.0
-        if self._cap_type == "adhoc":
-            self._coordinator.set_adhoc_cap(self._governed_entity_id, cap)
-        else:
-            self._coordinator.set_schedule_cap(self._governed_entity_id, cap)
+        self._coordinator.set_cap(self._governed_entity_id, cap)
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:

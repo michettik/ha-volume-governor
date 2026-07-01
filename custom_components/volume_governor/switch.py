@@ -1,4 +1,4 @@
-"""Switch platform for Volume Governor - ad-hoc on/off toggle."""
+"""Switch platform for Volume Governor - tap to engage/disengage."""
 from __future__ import annotations
 
 import logging
@@ -24,20 +24,22 @@ async def async_setup_entry(
 
     entities = []
     for dev_conf in entry.data.get(CONF_DEVICES, []):
+        entity_id = dev_conf[CONF_DEVICE_ENTITY_ID]
+        name = dev_conf[CONF_DEVICE_NAME]
+        # Main engage/disengage switch
         entities.append(
-            VolumeGovernorSwitch(
-                coordinator,
-                dev_conf[CONF_DEVICE_ENTITY_ID],
-                dev_conf[CONF_DEVICE_NAME],
-                entry.entry_id,
-            )
+            VolumeGovernorEngageSwitch(coordinator, entity_id, name, entry.entry_id)
+        )
+        # Persistent mode toggle
+        entities.append(
+            VolumeGovernorPersistentSwitch(coordinator, entity_id, name, entry.entry_id)
         )
 
     async_add_entities(entities)
 
 
-class VolumeGovernorSwitch(SwitchEntity):
-    """Switch to activate/deactivate ad-hoc volume cap."""
+class VolumeGovernorEngageSwitch(SwitchEntity):
+    """Switch to engage/disengage volume governance on a device."""
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:volume-off"
@@ -54,17 +56,16 @@ class VolumeGovernorSwitch(SwitchEntity):
         self._governed_entity_id = entity_id
         self._device_name = device_name
 
-        # Unique ID based on the governed entity
         slug = entity_id.replace(".", "_")
-        self._attr_unique_id = f"volume_governor_{slug}_adhoc"
-        self._attr_name = f"Volume Governor {device_name}"
+        self._attr_unique_id = f"volume_governor_{slug}_engage"
+        self._attr_name = f"Governor: {device_name}"
         self.entity_id = f"switch.volume_governor_{slug}"
 
     @property
     def is_on(self) -> bool:
-        """Return true if ad-hoc cap is active."""
+        """Return true if governor is engaged."""
         device = self._coordinator.devices.get(self._governed_entity_id)
-        return device.adhoc_active if device else False
+        return device.engaged if device else False
 
     @property
     def icon(self) -> str:
@@ -77,25 +78,24 @@ class VolumeGovernorSwitch(SwitchEntity):
         device = self._coordinator.devices.get(self._governed_entity_id)
         if not device:
             return {}
-        return {
+        attrs = {
             "governed_entity": self._governed_entity_id,
-            "adhoc_cap": int(device.adhoc_cap * 100),
-            "lift_time": device.adhoc_lift_time.strftime("%H:%M"),
-            "effective_cap": (
-                int(device.effective_cap * 100)
-                if device.effective_cap is not None
-                else None
-            ),
+            "cap_percent": int(device.cap * 100),
+            "persistent": device.persistent,
+            "schedule_active": self._coordinator.is_schedule_active(),
         }
+        if device.lift_at:
+            attrs["lift_at"] = device.lift_at.isoformat()
+        return attrs
 
     async def async_turn_on(self, **kwargs) -> None:
-        """Activate ad-hoc cap."""
-        self._coordinator.set_adhoc(self._governed_entity_id, True)
+        """Engage the governor."""
+        self._coordinator.engage(self._governed_entity_id)
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
-        """Deactivate ad-hoc cap."""
-        self._coordinator.set_adhoc(self._governed_entity_id, False)
+        """Disengage the governor."""
+        self._coordinator.disengage(self._governed_entity_id)
         self.async_write_ha_state()
 
     @callback
@@ -114,5 +114,64 @@ class VolumeGovernorSwitch(SwitchEntity):
     @callback
     def _on_governor_event(self, event) -> None:
         """React to governor events (e.g., auto-lift)."""
+        if event.data.get("entity_id") == self._governed_entity_id:
+            self.async_write_ha_state()
+
+
+class VolumeGovernorPersistentSwitch(SwitchEntity):
+    """Switch to toggle persistent mode for a governed device."""
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:lock-clock"
+
+    def __init__(
+        self,
+        coordinator: VolumeGovernorCoordinator,
+        entity_id: str,
+        device_name: str,
+        entry_id: str,
+    ) -> None:
+        """Initialize."""
+        self._coordinator = coordinator
+        self._governed_entity_id = entity_id
+        self._device_name = device_name
+
+        slug = entity_id.replace(".", "_")
+        self._attr_unique_id = f"volume_governor_{slug}_persistent"
+        self._attr_name = f"Governor: {device_name} (Persistent)"
+        self.entity_id = f"switch.volume_governor_{slug}_persistent"
+
+    @property
+    def is_on(self) -> bool:
+        """Return true if persistent mode is on."""
+        device = self._coordinator.devices.get(self._governed_entity_id)
+        return device.persistent if device else False
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on state."""
+        return "mdi:lock" if self.is_on else "mdi:lock-open-variant"
+
+    async def async_turn_on(self, **kwargs) -> None:
+        """Enable persistent mode."""
+        self._coordinator.set_persistent(self._governed_entity_id, True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        """Disable persistent mode."""
+        self._coordinator.set_persistent(self._governed_entity_id, False)
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        """Register for coordinator updates."""
+        self.async_on_remove(
+            self.hass.bus.async_listen(
+                "volume_governor_updated", self._on_governor_event
+            )
+        )
+
+    @callback
+    def _on_governor_event(self, event) -> None:
+        """React to governor events."""
         if event.data.get("entity_id") == self._governed_entity_id:
             self.async_write_ha_state()

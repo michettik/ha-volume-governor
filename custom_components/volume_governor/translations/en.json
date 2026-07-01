@@ -3,21 +3,19 @@
     "step": {
       "user": {
         "title": "Volume Governor - Select Devices",
-        "description": "Select the audio devices you want Volume Governor to manage. Only devices that support volume control are shown.",
+        "description": "Select the audio output devices you want Volume Governor to manage. Only devices that support volume control are shown.",
         "data": {
           "devices": "Devices to govern"
         }
       },
-      "device_config": {
-        "title": "Configure {device_name} ({device_number}/{device_total})",
-        "description": "Set up volume limits for this device. Ad-hoc mode lets you cap the volume on demand (with auto-lift). Schedule mode enforces a cap during specific hours every day. Both can be active simultaneously — the lowest cap wins.",
+      "schedule": {
+        "title": "Volume Governor - Schedule",
+        "description": "Configure when volume governance is active. Tap a device switch on the dashboard to engage the governor — it will automatically disengage at the end time. Enable 'Persistent' mode on a device to keep it governed indefinitely.",
         "data": {
-          "adhoc_cap": "Ad-hoc cap level (%)",
-          "adhoc_lift_time": "Ad-hoc auto-lift time (HH:MM)",
-          "schedule_enabled": "Enable scheduled quiet hours",
-          "schedule_start": "Schedule start time (HH:MM)",
-          "schedule_end": "Schedule end time (HH:MM)",
-          "schedule_cap": "Schedule cap level (%)",
+          "schedule_days": "Active days",
+          "schedule_start": "Governance start time (HH:MM)",
+          "schedule_end": "Governance end / auto-lift time (HH:MM)",
+          "default_cap": "Default volume cap (%)",
           "cap_floor": "Minimum allowed cap (%)"
         }
       }
@@ -34,21 +32,19 @@
     "step": {
       "init": {
         "title": "Volume Governor - Reconfigure Devices",
-        "description": "Select which devices to manage. Previously configured devices will retain their settings.",
+        "description": "Select which devices to manage.",
         "data": {
           "devices": "Devices to govern"
         }
       },
-      "device_config": {
-        "title": "Configure {device_name} ({device_number}/{device_total})",
-        "description": "Adjust volume limits for this device.",
+      "schedule": {
+        "title": "Volume Governor - Schedule",
+        "description": "Adjust the governance schedule.",
         "data": {
-          "adhoc_cap": "Ad-hoc cap level (%)",
-          "adhoc_lift_time": "Ad-hoc auto-lift time (HH:MM)",
-          "schedule_enabled": "Enable scheduled quiet hours",
-          "schedule_start": "Schedule start time (HH:MM)",
-          "schedule_end": "Schedule end time (HH:MM)",
-          "schedule_cap": "Schedule cap level (%)",
+          "schedule_days": "Active days",
+          "schedule_start": "Governance start time (HH:MM)",
+          "schedule_end": "Governance end / auto-lift time (HH:MM)",
+          "default_cap": "Default volume cap (%)",
           "cap_floor": "Minimum allowed cap (%)"
         }
       }

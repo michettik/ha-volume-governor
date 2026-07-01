@@ -7,35 +7,32 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.components.media_player import (
-    ATTR_MEDIA_VOLUME_LEVEL,
-    MediaPlayerEntityFeature,
-)
+from homeassistant.components.media_player import MediaPlayerEntityFeature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import config_validation as cv, entity_registry as er
+from homeassistant.helpers import config_validation as cv
 
 from .const import (
     DOMAIN,
     CONF_DEVICES,
     CONF_DEVICE_ENTITY_ID,
     CONF_DEVICE_NAME,
-    CONF_ADHOC_CAP,
-    CONF_ADHOC_LIFT_TIME,
-    CONF_SCHEDULE_ENABLED,
+    CONF_SCHEDULE_DAYS,
     CONF_SCHEDULE_START,
     CONF_SCHEDULE_END,
-    CONF_SCHEDULE_CAP,
+    CONF_DEFAULT_CAP,
     CONF_CAP_FLOOR,
-    DEFAULT_ADHOC_CAP,
-    DEFAULT_ADHOC_LIFT_TIME,
-    DEFAULT_SCHEDULE_CAP,
+    DEFAULT_SCHEDULE_DAYS,
     DEFAULT_SCHEDULE_START,
     DEFAULT_SCHEDULE_END,
+    DEFAULT_CAP,
     DEFAULT_CAP_FLOOR,
+    DAY_NAMES,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+DAY_OPTIONS = {str(k): v for k, v in DAY_NAMES.items()}
 
 
 def _discover_audio_devices(hass: HomeAssistant) -> dict[str, str]:
@@ -44,7 +41,6 @@ def _discover_audio_devices(hass: HomeAssistant) -> dict[str, str]:
     states = hass.states.async_all("media_player")
 
     for state in states:
-        # Check if entity supports VOLUME_SET feature
         features = state.attributes.get("supported_features", 0)
         if features & MediaPlayerEntityFeature.VOLUME_SET:
             friendly_name = state.attributes.get("friendly_name", state.entity_id)
@@ -56,20 +52,17 @@ def _discover_audio_devices(hass: HomeAssistant) -> dict[str, str]:
 class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Volume Governor."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self) -> None:
         """Initialize."""
         self._discovered_devices: dict[str, str] = {}
         self._selected_devices: list[str] = []
-        self._device_configs: list[dict[str, Any]] = []
-        self._current_device_index: int = 0
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Step 1: Discover and select devices."""
-        # Only allow one instance of the integration
         existing = self._async_current_entries()
         if existing:
             return self.async_abort(reason="already_configured")
@@ -80,7 +73,6 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="no_devices_found")
 
         if user_input is not None:
-            # multi_select returns {entity_id: bool} dict — extract selected ones
             selected = user_input.get("devices", {})
             if isinstance(selected, dict):
                 self._selected_devices = [k for k, v in selected.items() if v]
@@ -92,59 +84,50 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data_schema=self._devices_schema(),
                     errors={"base": "no_devices_selected"},
                 )
-            self._current_device_index = 0
-            return await self.async_step_device_config()
+            return await self.async_step_schedule()
 
         return self.async_show_form(
             step_id="user",
             data_schema=self._devices_schema(),
         )
 
-    async def async_step_device_config(
+    async def async_step_schedule(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 2+: Configure each selected device."""
+        """Step 2: Configure the governance schedule."""
         if user_input is not None:
-            entity_id = self._selected_devices[self._current_device_index]
-            device_config = {
-                CONF_DEVICE_ENTITY_ID: entity_id,
-                CONF_DEVICE_NAME: self._discovered_devices.get(entity_id, entity_id),
-                CONF_ADHOC_CAP: user_input.get(CONF_ADHOC_CAP, 30) / 100.0,
-                CONF_ADHOC_LIFT_TIME: user_input.get(
-                    CONF_ADHOC_LIFT_TIME, DEFAULT_ADHOC_LIFT_TIME
-                ),
-                CONF_SCHEDULE_ENABLED: user_input.get(CONF_SCHEDULE_ENABLED, False),
-                CONF_SCHEDULE_START: user_input.get(
-                    CONF_SCHEDULE_START, DEFAULT_SCHEDULE_START
-                ),
-                CONF_SCHEDULE_END: user_input.get(
-                    CONF_SCHEDULE_END, DEFAULT_SCHEDULE_END
-                ),
-                CONF_SCHEDULE_CAP: user_input.get(CONF_SCHEDULE_CAP, 30) / 100.0,
+            # Parse day selections
+            selected_days_raw = user_input.get(CONF_SCHEDULE_DAYS, {})
+            if isinstance(selected_days_raw, dict):
+                selected_days = [int(k) for k, v in selected_days_raw.items() if v]
+            else:
+                selected_days = [int(d) for d in selected_days_raw]
+
+            # Build device list with names
+            device_list = []
+            for entity_id in self._selected_devices:
+                device_list.append({
+                    CONF_DEVICE_ENTITY_ID: entity_id,
+                    CONF_DEVICE_NAME: self._discovered_devices.get(entity_id, entity_id),
+                })
+
+            data = {
+                CONF_DEVICES: device_list,
+                CONF_SCHEDULE_DAYS: selected_days,
+                CONF_SCHEDULE_START: user_input.get(CONF_SCHEDULE_START, DEFAULT_SCHEDULE_START),
+                CONF_SCHEDULE_END: user_input.get(CONF_SCHEDULE_END, DEFAULT_SCHEDULE_END),
+                CONF_DEFAULT_CAP: user_input.get(CONF_DEFAULT_CAP, 30) / 100.0,
                 CONF_CAP_FLOOR: user_input.get(CONF_CAP_FLOOR, 10) / 100.0,
             }
-            self._device_configs.append(device_config)
-            self._current_device_index += 1
 
-            if self._current_device_index >= len(self._selected_devices):
-                # All devices configured — create the entry
-                return self.async_create_entry(
-                    title="Volume Governor",
-                    data={CONF_DEVICES: self._device_configs},
-                )
-
-        # Show config form for current device
-        entity_id = self._selected_devices[self._current_device_index]
-        device_name = self._discovered_devices.get(entity_id, entity_id)
+            return self.async_create_entry(
+                title="Volume Governor",
+                data=data,
+            )
 
         return self.async_show_form(
-            step_id="device_config",
-            data_schema=self._device_config_schema(),
-            description_placeholders={
-                "device_name": device_name,
-                "device_number": str(self._current_device_index + 1),
-                "device_total": str(len(self._selected_devices)),
-            },
+            step_id="schedule",
+            data_schema=self._schedule_schema(),
         )
 
     @staticmethod
@@ -163,17 +146,14 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
-    def _device_config_schema(self) -> vol.Schema:
-        """Build per-device configuration schema."""
+    def _schedule_schema(self) -> vol.Schema:
+        """Build the schedule configuration schema."""
+        default_days = [str(d) for d in DEFAULT_SCHEDULE_DAYS]
         return vol.Schema(
             {
                 vol.Required(
-                    CONF_ADHOC_CAP, default=int(DEFAULT_ADHOC_CAP * 100)
-                ): vol.All(vol.Coerce(int), vol.Range(min=5, max=100)),
-                vol.Required(
-                    CONF_ADHOC_LIFT_TIME, default=DEFAULT_ADHOC_LIFT_TIME
-                ): str,
-                vol.Required(CONF_SCHEDULE_ENABLED, default=False): bool,
+                    CONF_SCHEDULE_DAYS, default=default_days
+                ): cv.multi_select(DAY_OPTIONS),
                 vol.Required(
                     CONF_SCHEDULE_START, default=DEFAULT_SCHEDULE_START
                 ): str,
@@ -181,7 +161,7 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_SCHEDULE_END, default=DEFAULT_SCHEDULE_END
                 ): str,
                 vol.Required(
-                    CONF_SCHEDULE_CAP, default=int(DEFAULT_SCHEDULE_CAP * 100)
+                    CONF_DEFAULT_CAP, default=int(DEFAULT_CAP * 100)
                 ): vol.All(vol.Coerce(int), vol.Range(min=5, max=100)),
                 vol.Required(
                     CONF_CAP_FLOOR, default=int(DEFAULT_CAP_FLOOR * 100)
@@ -191,26 +171,23 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class VolumeGovernorOptionsFlow(config_entries.OptionsFlow):
-    """Handle options for Volume Governor (reconfigure devices)."""
+    """Handle options for Volume Governor (reconfigure)."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize."""
         self.config_entry = config_entry
         self._discovered_devices: dict[str, str] = {}
         self._selected_devices: list[str] = []
-        self._device_configs: list[dict[str, Any]] = []
-        self._current_device_index: int = 0
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Manage the options - same flow as initial setup."""
+        """Manage the options - device selection."""
         self._discovered_devices = _discover_audio_devices(self.hass)
 
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
 
-        # Pre-select currently configured devices
         current_devices = [
             d[CONF_DEVICE_ENTITY_ID]
             for d in self.config_entry.data.get(CONF_DEVICES, [])
@@ -228,70 +205,81 @@ class VolumeGovernorOptionsFlow(config_entries.OptionsFlow):
                     data_schema=self._devices_schema(current_devices),
                     errors={"base": "no_devices_selected"},
                 )
-            self._current_device_index = 0
-            return await self.async_step_device_config()
+            return await self.async_step_schedule()
 
         return self.async_show_form(
             step_id="init",
             data_schema=self._devices_schema(current_devices),
         )
 
-    async def async_step_device_config(
+    async def async_step_schedule(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Configure each selected device."""
+        """Configure schedule."""
         if user_input is not None:
-            entity_id = self._selected_devices[self._current_device_index]
-            device_config = {
-                CONF_DEVICE_ENTITY_ID: entity_id,
-                CONF_DEVICE_NAME: self._discovered_devices.get(entity_id, entity_id),
-                CONF_ADHOC_CAP: user_input.get(CONF_ADHOC_CAP, 30) / 100.0,
-                CONF_ADHOC_LIFT_TIME: user_input.get(
-                    CONF_ADHOC_LIFT_TIME, DEFAULT_ADHOC_LIFT_TIME
-                ),
-                CONF_SCHEDULE_ENABLED: user_input.get(CONF_SCHEDULE_ENABLED, False),
+            selected_days_raw = user_input.get(CONF_SCHEDULE_DAYS, {})
+            if isinstance(selected_days_raw, dict):
+                selected_days = [int(k) for k, v in selected_days_raw.items() if v]
+            else:
+                selected_days = [int(d) for d in selected_days_raw]
+
+            device_list = []
+            for entity_id in self._selected_devices:
+                device_list.append({
+                    CONF_DEVICE_ENTITY_ID: entity_id,
+                    CONF_DEVICE_NAME: self._discovered_devices.get(entity_id, entity_id),
+                })
+
+            new_data = {
+                CONF_DEVICES: device_list,
+                CONF_SCHEDULE_DAYS: selected_days,
                 CONF_SCHEDULE_START: user_input.get(
-                    CONF_SCHEDULE_START, DEFAULT_SCHEDULE_START
+                    CONF_SCHEDULE_START, self.config_entry.data.get(CONF_SCHEDULE_START, DEFAULT_SCHEDULE_START)
                 ),
                 CONF_SCHEDULE_END: user_input.get(
-                    CONF_SCHEDULE_END, DEFAULT_SCHEDULE_END
+                    CONF_SCHEDULE_END, self.config_entry.data.get(CONF_SCHEDULE_END, DEFAULT_SCHEDULE_END)
                 ),
-                CONF_SCHEDULE_CAP: user_input.get(CONF_SCHEDULE_CAP, 30) / 100.0,
+                CONF_DEFAULT_CAP: user_input.get(CONF_DEFAULT_CAP, 30) / 100.0,
                 CONF_CAP_FLOOR: user_input.get(CONF_CAP_FLOOR, 10) / 100.0,
             }
-            self._device_configs.append(device_config)
-            self._current_device_index += 1
 
-            if self._current_device_index >= len(self._selected_devices):
-                # Update the config entry with new data
-                self.hass.config_entries.async_update_entry(
-                    self.config_entry,
-                    data={CONF_DEVICES: self._device_configs},
-                )
-                return self.async_create_entry(title="", data={})
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=new_data
+            )
+            return self.async_create_entry(title="", data={})
 
-        entity_id = self._selected_devices[self._current_device_index]
-        device_name = self._discovered_devices.get(entity_id, entity_id)
-
-        # Load existing config for this device if available
-        existing = self._get_existing_config(entity_id)
+        # Pre-fill with existing values
+        existing = self.config_entry.data
+        current_days = [str(d) for d in existing.get(CONF_SCHEDULE_DAYS, DEFAULT_SCHEDULE_DAYS)]
+        current_cap = existing.get(CONF_DEFAULT_CAP, DEFAULT_CAP)
+        current_floor = existing.get(CONF_CAP_FLOOR, DEFAULT_CAP_FLOOR)
 
         return self.async_show_form(
-            step_id="device_config",
-            data_schema=self._device_config_schema(existing),
-            description_placeholders={
-                "device_name": device_name,
-                "device_number": str(self._current_device_index + 1),
-                "device_total": str(len(self._selected_devices)),
-            },
+            step_id="schedule",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SCHEDULE_DAYS, default=current_days
+                    ): cv.multi_select(DAY_OPTIONS),
+                    vol.Required(
+                        CONF_SCHEDULE_START,
+                        default=existing.get(CONF_SCHEDULE_START, DEFAULT_SCHEDULE_START),
+                    ): str,
+                    vol.Required(
+                        CONF_SCHEDULE_END,
+                        default=existing.get(CONF_SCHEDULE_END, DEFAULT_SCHEDULE_END),
+                    ): str,
+                    vol.Required(
+                        CONF_DEFAULT_CAP,
+                        default=int(current_cap * 100) if isinstance(current_cap, float) else 30,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=5, max=100)),
+                    vol.Required(
+                        CONF_CAP_FLOOR,
+                        default=int(current_floor * 100) if isinstance(current_floor, float) else 10,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=50)),
+                }
+            ),
         )
-
-    def _get_existing_config(self, entity_id: str) -> dict[str, Any]:
-        """Get existing config for a device if it was previously configured."""
-        for dev in self.config_entry.data.get(CONF_DEVICES, []):
-            if dev[CONF_DEVICE_ENTITY_ID] == entity_id:
-                return dev
-        return {}
 
     def _devices_schema(self, default: list[str] | None = None) -> vol.Schema:
         """Build device selection schema with optional defaults."""
@@ -300,47 +288,5 @@ class VolumeGovernorOptionsFlow(config_entries.OptionsFlow):
                 vol.Required("devices", default=default or []): cv.multi_select(
                     self._discovered_devices
                 ),
-            }
-        )
-
-    def _device_config_schema(self, existing: dict[str, Any] | None = None) -> vol.Schema:
-        """Build per-device configuration schema with existing values."""
-        existing = existing or {}
-        return vol.Schema(
-            {
-                vol.Required(
-                    CONF_ADHOC_CAP,
-                    default=int(existing.get(CONF_ADHOC_CAP, DEFAULT_ADHOC_CAP) * 100)
-                    if isinstance(existing.get(CONF_ADHOC_CAP), float)
-                    else int(DEFAULT_ADHOC_CAP * 100),
-                ): vol.All(vol.Coerce(int), vol.Range(min=5, max=100)),
-                vol.Required(
-                    CONF_ADHOC_LIFT_TIME,
-                    default=existing.get(CONF_ADHOC_LIFT_TIME, DEFAULT_ADHOC_LIFT_TIME),
-                ): str,
-                vol.Required(
-                    CONF_SCHEDULE_ENABLED,
-                    default=existing.get(CONF_SCHEDULE_ENABLED, False),
-                ): bool,
-                vol.Required(
-                    CONF_SCHEDULE_START,
-                    default=existing.get(CONF_SCHEDULE_START, DEFAULT_SCHEDULE_START),
-                ): str,
-                vol.Required(
-                    CONF_SCHEDULE_END,
-                    default=existing.get(CONF_SCHEDULE_END, DEFAULT_SCHEDULE_END),
-                ): str,
-                vol.Required(
-                    CONF_SCHEDULE_CAP,
-                    default=int(existing.get(CONF_SCHEDULE_CAP, DEFAULT_SCHEDULE_CAP) * 100)
-                    if isinstance(existing.get(CONF_SCHEDULE_CAP), float)
-                    else int(DEFAULT_SCHEDULE_CAP * 100),
-                ): vol.All(vol.Coerce(int), vol.Range(min=5, max=100)),
-                vol.Required(
-                    CONF_CAP_FLOOR,
-                    default=int(existing.get(CONF_CAP_FLOOR, DEFAULT_CAP_FLOOR) * 100)
-                    if isinstance(existing.get(CONF_CAP_FLOOR), float)
-                    else int(DEFAULT_CAP_FLOOR * 100),
-                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=50)),
             }
         )

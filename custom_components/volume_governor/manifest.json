@@ -3,10 +3,10 @@
   "name": "Volume Governor",
   "codeowners": ["@michettik"],
   "config_flow": true,
-  "documentation": "https://gitea.michetti.cc/michettik/ha-volume-governor",
+  "documentation": "https://github.com/michettik/ha-volume-governor",
   "integration_type": "hub",
   "iot_class": "local_push",
-  "issue_tracker": "https://gitea.michetti.cc/michettik/ha-volume-governor/issues",
+  "issue_tracker": "https://github.com/michettik/ha-volume-governor/issues",
   "requirements": [],
-  "version": "1.0.0"
+  "version": "2.0.0"
 }

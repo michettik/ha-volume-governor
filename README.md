@@ -3,7 +3,7 @@
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A Home Assistant custom integration that enforces volume limits on audio devices. Because sometimes your kids (or your own drunk self) don't understand what "reasonable volume" means.
+A Home Assistant custom integration that enforces volume limits on audio devices. Because sometimes the people in your house don't understand what "reasonable volume" means.
 
 ## Features
 

@@ -258,6 +258,10 @@ class VolumeGovernorCoordinator:
         # Block state-change listener for 1 second to let in-flight events pass
         self._enforcing.add(entity_id)
         self.hass.async_create_task(self._async_clear_enforcing(entity_id))
+        # Notify entities to refresh their displayed state
+        self.hass.bus.async_fire(
+            "volume_governor_updated", {"entity_id": entity_id}
+        )
         _LOGGER.info("Volume Governor: disengaged %s", entity_id)
 
     async def _async_clear_enforcing(self, entity_id: str) -> None:

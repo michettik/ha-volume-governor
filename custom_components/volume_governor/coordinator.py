@@ -8,6 +8,7 @@ Core design:
 - Ad-hoc engagement auto-lifts at the schedule_end time the NEXT day
 - Persistent mode keeps enforcement running until manually toggled off
 - Real-time enforcement via state change listeners (no polling needed)
+- Per-device caps stored in .storage/volume_governor (survives restarts)
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
 )
+from homeassistant.helpers.storage import Store
 from homeassistant.components.media_player import (
     ATTR_MEDIA_VOLUME_LEVEL,
     DOMAIN as MP_DOMAIN,
@@ -29,6 +31,7 @@ from homeassistant.components.media_player import (
 )
 
 from .const import (
+    DOMAIN,
     CONF_DEVICES,
     CONF_DEVICE_ENTITY_ID,
     CONF_SCHEDULE_DAYS,
@@ -46,6 +49,8 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 ACTIVE_STATES = {STATE_ON, STATE_PLAYING, STATE_IDLE, STATE_PAUSED}
+STORAGE_VERSION = 1
+STORAGE_KEY = f"{DOMAIN}.device_caps"
 
 
 class GovernedDevice:
@@ -83,17 +88,20 @@ class VolumeGovernorCoordinator:
         self._unsub_state: CALLBACK_TYPE | None = None
         self._unsub_lift_check: CALLBACK_TYPE | None = None
         self._enforcing: set[str] = set()
-        self._skip_reload: bool = False
+        self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
 
     async def async_setup(self) -> None:
         """Set up the coordinator: register listeners."""
+        # Load persisted per-device caps from .storage
+        stored = await self._store.async_load() or {}
+
         devices_config = self.entry.data.get(CONF_DEVICES, [])
         for dev_conf in devices_config:
             entity_id = dev_conf[CONF_DEVICE_ENTITY_ID]
             name = dev_conf.get("name", entity_id)
             device = GovernedDevice(entity_id, name)
-            # Load per-device cap if stored, otherwise use global default
-            device.cap = dev_conf.get("cap", self.default_cap)
+            # Load per-device cap from storage, fall back to global default
+            device.cap = stored.get(entity_id, {}).get("cap", self.default_cap)
             self.devices[entity_id] = device
 
         # Listen for state changes on all governed entities
@@ -116,6 +124,13 @@ class VolumeGovernorCoordinator:
         if self._unsub_lift_check:
             self._unsub_lift_check()
             self._unsub_lift_check = None
+
+    async def _async_save_caps(self) -> None:
+        """Persist per-device caps to .storage file."""
+        data = {}
+        for entity_id, device in self.devices.items():
+            data[entity_id] = {"cap": device.cap}
+        await self._store.async_save(data)
 
     @callback
     def _async_check_lifts(self, _now: datetime) -> None:
@@ -166,16 +181,15 @@ class VolumeGovernorCoordinator:
                 cap,
             )
             self._enforcing.add(entity_id)
-            self.hass.async_create_task(self._async_enforce(entity_id, cap))
+            self.hass.async_create_task(self._async_enforce(entity_id))
 
-    async def _async_enforce(self, entity_id: str, cap: float) -> None:
-        """Set volume back to cap."""
+    async def _async_enforce(self, entity_id: str) -> None:
+        """Set volume back to cap. Always reads LIVE cap from device."""
         try:
-            # Re-check engaged state right before enforcement — if user disengaged
-            # between the event fire and this task running, bail out
             device = self.devices.get(entity_id)
             if not device or not device.engaged:
                 return
+            cap = max(device.cap, self.cap_floor)
             await self.hass.services.async_call(
                 MP_DOMAIN,
                 SERVICE_VOLUME_SET,
@@ -219,7 +233,7 @@ class VolumeGovernorCoordinator:
             current = state.attributes.get(ATTR_MEDIA_VOLUME_LEVEL)
             cap = max(device.cap, self.cap_floor)
             if current is not None and current > cap:
-                self.hass.async_create_task(self._async_enforce(entity_id, cap))
+                self.hass.async_create_task(self._async_enforce(entity_id))
 
     def disengage(self, entity_id: str) -> None:
         """Disengage the governor for a device."""
@@ -229,7 +243,7 @@ class VolumeGovernorCoordinator:
 
         device.engaged = False
         device.lift_at = None
-        # Add to enforcing set briefly to block any in-flight state-change callbacks
+        # Block state-change listener for 1 second to let in-flight events pass
         self._enforcing.add(entity_id)
         self.hass.async_create_task(self._async_clear_enforcing(entity_id))
         _LOGGER.info("Volume Governor: disengaged %s", entity_id)
@@ -257,34 +271,12 @@ class VolumeGovernorCoordinator:
         )
 
     def set_cap(self, entity_id: str, cap: float) -> None:
-        """Update the cap value for a device and persist to config entry."""
+        """Update the cap value for a device and persist."""
         device = self.devices.get(entity_id)
         if device:
             device.cap = max(cap, self.cap_floor)
-            # Persist to config entry so it survives restarts
-            self._persist_device_cap(entity_id, device.cap)
-            # Re-enforce immediately if engaged and over new cap
-            if device.engaged:
-                state = self.hass.states.get(entity_id)
-                if state and state.state in ACTIVE_STATES:
-                    current = state.attributes.get(ATTR_MEDIA_VOLUME_LEVEL)
-                    if current is not None and current > device.cap:
-                        self.hass.async_create_task(
-                            self._async_enforce(entity_id, device.cap)
-                        )
-
-    def _persist_device_cap(self, entity_id: str, cap: float) -> None:
-        """Write per-device cap back to config entry data (without triggering reload)."""
-        devices = list(self.entry.data.get(CONF_DEVICES, []))
-        for i, dev in enumerate(devices):
-            if dev[CONF_DEVICE_ENTITY_ID] == entity_id:
-                devices[i] = {**dev, "cap": cap}
-                break
-        new_data = {**self.entry.data, CONF_DEVICES: devices}
-        self._skip_reload = True
-        self.hass.config_entries.async_update_entry(
-            self.entry, data=new_data
-        )
+            # Persist to .storage (no config entry mutation, no reload)
+            self.hass.async_create_task(self._async_save_caps())
 
     def get_status(self, entity_id: str) -> str:
         """Get human-readable status for a device."""
@@ -313,8 +305,6 @@ class VolumeGovernorCoordinator:
     def _compute_lift_time(self) -> datetime:
         """Compute the next occurrence of schedule_end time."""
         now = datetime.now()
-        # Target: the next schedule_end time
-        # If schedule crosses midnight (22:00-07:00), lift is the NEXT morning
         target = now.replace(
             hour=self.schedule_end.hour,
             minute=self.schedule_end.minute,

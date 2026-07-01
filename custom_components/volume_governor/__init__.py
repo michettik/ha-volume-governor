@@ -48,9 +48,5 @@ async def async_unload_entry(
 async def _async_update_listener(
     hass: HomeAssistant, entry: VolumeGovernorConfigEntry
 ) -> None:
-    """Handle options update — skip reload if just a cap slider change."""
-    coordinator: VolumeGovernorCoordinator = hass.data[DOMAIN].get(entry.entry_id)
-    if coordinator and coordinator._skip_reload:
-        coordinator._skip_reload = False
-        return
+    """Handle options update — reload integration."""
     await hass.config_entries.async_reload(entry.entry_id)

@@ -109,7 +109,7 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             device_config = {
                 CONF_DEVICE_ENTITY_ID: entity_id,
                 CONF_DEVICE_NAME: self._discovered_devices.get(entity_id, entity_id),
-                CONF_ADHOC_CAP: user_input.get(CONF_ADHOC_CAP, DEFAULT_ADHOC_CAP),
+                CONF_ADHOC_CAP: user_input.get(CONF_ADHOC_CAP, 30) / 100.0,
                 CONF_ADHOC_LIFT_TIME: user_input.get(
                     CONF_ADHOC_LIFT_TIME, DEFAULT_ADHOC_LIFT_TIME
                 ),
@@ -120,10 +120,8 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_SCHEDULE_END: user_input.get(
                     CONF_SCHEDULE_END, DEFAULT_SCHEDULE_END
                 ),
-                CONF_SCHEDULE_CAP: user_input.get(
-                    CONF_SCHEDULE_CAP, DEFAULT_SCHEDULE_CAP
-                ),
-                CONF_CAP_FLOOR: user_input.get(CONF_CAP_FLOOR, DEFAULT_CAP_FLOOR),
+                CONF_SCHEDULE_CAP: user_input.get(CONF_SCHEDULE_CAP, 30) / 100.0,
+                CONF_CAP_FLOOR: user_input.get(CONF_CAP_FLOOR, 10) / 100.0,
             }
             self._device_configs.append(device_config)
             self._current_device_index += 1
@@ -247,7 +245,7 @@ class VolumeGovernorOptionsFlow(config_entries.OptionsFlow):
             device_config = {
                 CONF_DEVICE_ENTITY_ID: entity_id,
                 CONF_DEVICE_NAME: self._discovered_devices.get(entity_id, entity_id),
-                CONF_ADHOC_CAP: user_input.get(CONF_ADHOC_CAP, DEFAULT_ADHOC_CAP),
+                CONF_ADHOC_CAP: user_input.get(CONF_ADHOC_CAP, 30) / 100.0,
                 CONF_ADHOC_LIFT_TIME: user_input.get(
                     CONF_ADHOC_LIFT_TIME, DEFAULT_ADHOC_LIFT_TIME
                 ),
@@ -258,10 +256,8 @@ class VolumeGovernorOptionsFlow(config_entries.OptionsFlow):
                 CONF_SCHEDULE_END: user_input.get(
                     CONF_SCHEDULE_END, DEFAULT_SCHEDULE_END
                 ),
-                CONF_SCHEDULE_CAP: user_input.get(
-                    CONF_SCHEDULE_CAP, DEFAULT_SCHEDULE_CAP
-                ),
-                CONF_CAP_FLOOR: user_input.get(CONF_CAP_FLOOR, DEFAULT_CAP_FLOOR),
+                CONF_SCHEDULE_CAP: user_input.get(CONF_SCHEDULE_CAP, 30) / 100.0,
+                CONF_CAP_FLOOR: user_input.get(CONF_CAP_FLOOR, 10) / 100.0,
             }
             self._device_configs.append(device_config)
             self._current_device_index += 1

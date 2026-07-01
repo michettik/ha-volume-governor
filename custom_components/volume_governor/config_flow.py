@@ -13,7 +13,7 @@ from homeassistant.components.media_player import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import config_validation as cv, entity_registry as er
 
 from .const import (
     DOMAIN,
@@ -73,15 +73,18 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
 
-        self._discovered_devices = await self.hass.async_add_executor_job(
-            _discover_audio_devices, self.hass
-        )
+        self._discovered_devices = _discover_audio_devices(self.hass)
 
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
 
         if user_input is not None:
-            self._selected_devices = user_input.get("devices", [])
+            # multi_select returns {entity_id: bool} dict — extract selected ones
+            selected = user_input.get("devices", {})
+            if isinstance(selected, dict):
+                self._selected_devices = [k for k, v in selected.items() if v]
+            else:
+                self._selected_devices = selected
             if not self._selected_devices:
                 return self.async_show_form(
                     step_id="user",
@@ -157,10 +160,7 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Build the device selection schema."""
         return vol.Schema(
             {
-                vol.Required("devices"): vol.All(
-                    vol.Coerce(list),
-                    [vol.In(self._discovered_devices)],
-                ),
+                vol.Required("devices"): cv.multi_select(self._discovered_devices),
             }
         )
 
@@ -206,9 +206,7 @@ class VolumeGovernorOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage the options - same flow as initial setup."""
-        self._discovered_devices = await self.hass.async_add_executor_job(
-            _discover_audio_devices, self.hass
-        )
+        self._discovered_devices = _discover_audio_devices(self.hass)
 
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
@@ -220,7 +218,11 @@ class VolumeGovernorOptionsFlow(config_entries.OptionsFlow):
         ]
 
         if user_input is not None:
-            self._selected_devices = user_input.get("devices", [])
+            selected = user_input.get("devices", {})
+            if isinstance(selected, dict):
+                self._selected_devices = [k for k, v in selected.items() if v]
+            else:
+                self._selected_devices = selected
             if not self._selected_devices:
                 return self.async_show_form(
                     step_id="init",
@@ -298,9 +300,8 @@ class VolumeGovernorOptionsFlow(config_entries.OptionsFlow):
         """Build device selection schema with optional defaults."""
         return vol.Schema(
             {
-                vol.Required("devices", default=default or []): vol.All(
-                    vol.Coerce(list),
-                    [vol.In(self._discovered_devices)],
+                vol.Required("devices", default=default or []): cv.multi_select(
+                    self._discovered_devices
                 ),
             }
         )

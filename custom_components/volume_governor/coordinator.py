@@ -277,6 +277,14 @@ class VolumeGovernorCoordinator:
             device.cap = max(cap, self.cap_floor)
             # Persist to .storage (no config entry mutation, no reload)
             self.hass.async_create_task(self._async_save_caps())
+            # If engaged and current volume exceeds new cap, enforce NOW
+            if device.engaged:
+                state = self.hass.states.get(entity_id)
+                if state and state.state in ACTIVE_STATES:
+                    current = state.attributes.get(ATTR_MEDIA_VOLUME_LEVEL)
+                    if current is not None and current > device.cap:
+                        self._enforcing.discard(entity_id)
+                        self.hass.async_create_task(self._async_enforce(entity_id))
 
     def get_status(self, entity_id: str) -> str:
         """Get human-readable status for a device."""

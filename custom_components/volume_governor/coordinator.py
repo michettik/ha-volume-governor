@@ -141,6 +141,10 @@ class VolumeGovernorCoordinator:
                 if now >= device.lift_at:
                     device.engaged = False
                     device.lift_at = None
+                    # Reset per-device cap override back to global default
+                    if device.cap != self.default_cap:
+                        device.cap = self.default_cap
+                        self.hass.async_create_task(self._async_save_caps())
                     _LOGGER.info(
                         "Volume Governor: auto-lifted %s (schedule end reached)",
                         device.entity_id,
@@ -243,6 +247,14 @@ class VolumeGovernorCoordinator:
 
         device.engaged = False
         device.lift_at = None
+        # Reset per-device cap override back to global default for next cycle
+        if device.cap != self.default_cap:
+            device.cap = self.default_cap
+            self.hass.async_create_task(self._async_save_caps())
+            _LOGGER.info(
+                "Volume Governor: reset %s cap to global default %d%%",
+                entity_id, int(self.default_cap * 100),
+            )
         # Block state-change listener for 1 second to let in-flight events pass
         self._enforcing.add(entity_id)
         self.hass.async_create_task(self._async_clear_enforcing(entity_id))

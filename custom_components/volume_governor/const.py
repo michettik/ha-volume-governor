@@ -35,3 +35,14 @@ DAY_NAMES = {
     5: "Saturday",
     6: "Sunday",
 }
+
+
+def device_info_for(entity_id: str, device_name: str) -> dict:
+    """Generate consistent DeviceInfo dict for a governed device."""
+    return {
+        "identifiers": {(DOMAIN, entity_id)},
+        "name": f"Volume Governor: {device_name}",
+        "manufacturer": "Volume Governor",
+        "model": "Governed Audio Device",
+        "entry_type": "service",
+    }

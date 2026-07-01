@@ -6,6 +6,8 @@ import logging
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, CONF_DEVICES, CONF_DEVICE_ENTITY_ID, CONF_DEVICE_NAME
@@ -58,8 +60,15 @@ class VolumeGovernorCapNumber(NumberEntity):
 
         slug = entity_id.replace(".", "_")
         self._attr_unique_id = f"volume_governor_{slug}_cap"
-        self._attr_name = f"Governor: {device_name} Cap"
+        self._attr_name = "Volume Cap"
         self.entity_id = f"number.volume_governor_{slug}_cap"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entity_id)},
+            name=f"Governor: {device_name}",
+            manufacturer="Volume Governor",
+            model="Governed Audio Device",
+            entry_type=DeviceEntryType.SERVICE,
+        )
 
     @property
     def native_value(self) -> float | None:

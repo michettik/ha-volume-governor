@@ -6,6 +6,8 @@ import logging
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
@@ -59,8 +61,15 @@ class VolumeGovernorSensor(SensorEntity):
 
         slug = entity_id.replace(".", "_")
         self._attr_unique_id = f"volume_governor_{slug}_status"
-        self._attr_name = f"Governor: {device_name} Status"
+        self._attr_name = "Status"
         self.entity_id = f"sensor.volume_governor_{slug}_status"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entity_id)},
+            name=f"Governor: {device_name}",
+            manufacturer="Volume Governor",
+            model="Governed Audio Device",
+            entry_type=DeviceEntryType.SERVICE,
+        )
 
     @property
     def native_value(self) -> str:

@@ -6,9 +6,11 @@ import logging
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, CONF_DEVICES, CONF_DEVICE_ENTITY_ID, CONF_DEVICE_NAME
+from .const import DOMAIN, CONF_DEVICES, CONF_DEVICE_ENTITY_ID, CONF_DEVICE_NAME, device_info_for
 from .coordinator import VolumeGovernorCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,10 +41,13 @@ async def async_setup_entry(
 
 
 class VolumeGovernorEngageSwitch(SwitchEntity):
-    """Switch to engage/disengage volume governance on a device."""
+    """Switch to engage/disengage volume governance on a device.
+    
+    This is the main control — tap to enforce the volume cap immediately,
+    tap again to release it. Works regardless of schedule.
+    """
 
     _attr_has_entity_name = True
-    _attr_icon = "mdi:volume-off"
 
     def __init__(
         self,
@@ -58,8 +63,15 @@ class VolumeGovernorEngageSwitch(SwitchEntity):
 
         slug = entity_id.replace(".", "_")
         self._attr_unique_id = f"volume_governor_{slug}_engage"
-        self._attr_name = f"Governor: {device_name}"
+        self._attr_name = "Enforce"
         self.entity_id = f"switch.volume_governor_{slug}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entity_id)},
+            name=f"Governor: {device_name}",
+            manufacturer="Volume Governor",
+            model="Governed Audio Device",
+            entry_type=DeviceEntryType.SERVICE,
+        )
 
     @property
     def is_on(self) -> bool:
@@ -89,12 +101,12 @@ class VolumeGovernorEngageSwitch(SwitchEntity):
         return attrs
 
     async def async_turn_on(self, **kwargs) -> None:
-        """Engage the governor."""
+        """Engage the governor — enforce volume cap immediately."""
         self._coordinator.engage(self._governed_entity_id)
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
-        """Disengage the governor."""
+        """Disengage the governor — remove volume cap."""
         self._coordinator.disengage(self._governed_entity_id)
         self.async_write_ha_state()
 
@@ -119,10 +131,13 @@ class VolumeGovernorEngageSwitch(SwitchEntity):
 
 
 class VolumeGovernorPersistentSwitch(SwitchEntity):
-    """Switch to toggle persistent mode for a governed device."""
+    """Switch to toggle persistent mode for a governed device.
+    
+    When persistent is ON, the enforcement never auto-lifts.
+    When OFF, enforcement lifts at the configured schedule_end time.
+    """
 
     _attr_has_entity_name = True
-    _attr_icon = "mdi:lock-clock"
 
     def __init__(
         self,
@@ -138,8 +153,15 @@ class VolumeGovernorPersistentSwitch(SwitchEntity):
 
         slug = entity_id.replace(".", "_")
         self._attr_unique_id = f"volume_governor_{slug}_persistent"
-        self._attr_name = f"Governor: {device_name} (Persistent)"
+        self._attr_name = "Persistent"
         self.entity_id = f"switch.volume_governor_{slug}_persistent"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entity_id)},
+            name=f"Governor: {device_name}",
+            manufacturer="Volume Governor",
+            model="Governed Audio Device",
+            entry_type=DeviceEntryType.SERVICE,
+        )
 
     @property
     def is_on(self) -> bool:

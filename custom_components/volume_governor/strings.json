@@ -1,0 +1,63 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Volume Governor - Select Devices",
+        "description": "Select the audio devices you want Volume Governor to manage. Only devices that support volume control are shown.",
+        "data": {
+          "devices": "Devices to govern"
+        }
+      },
+      "device_config": {
+        "title": "Configure {device_name} ({device_number}/{device_total})",
+        "description": "Set up volume limits for this device. Ad-hoc mode lets you cap the volume on demand (with auto-lift). Schedule mode enforces a cap during specific hours every day. Both can be active simultaneously — the lowest cap wins.",
+        "data": {
+          "adhoc_cap": "Ad-hoc cap level (%)",
+          "adhoc_lift_time": "Ad-hoc auto-lift time (HH:MM)",
+          "schedule_enabled": "Enable scheduled quiet hours",
+          "schedule_start": "Schedule start time (HH:MM)",
+          "schedule_end": "Schedule end time (HH:MM)",
+          "schedule_cap": "Schedule cap level (%)",
+          "cap_floor": "Minimum allowed cap (%)"
+        }
+      }
+    },
+    "error": {
+      "no_devices_selected": "You must select at least one device."
+    },
+    "abort": {
+      "already_configured": "Volume Governor is already configured. Use Options to modify.",
+      "no_devices_found": "No audio devices with volume control found in Home Assistant."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Volume Governor - Reconfigure Devices",
+        "description": "Select which devices to manage. Previously configured devices will retain their settings.",
+        "data": {
+          "devices": "Devices to govern"
+        }
+      },
+      "device_config": {
+        "title": "Configure {device_name} ({device_number}/{device_total})",
+        "description": "Adjust volume limits for this device.",
+        "data": {
+          "adhoc_cap": "Ad-hoc cap level (%)",
+          "adhoc_lift_time": "Ad-hoc auto-lift time (HH:MM)",
+          "schedule_enabled": "Enable scheduled quiet hours",
+          "schedule_start": "Schedule start time (HH:MM)",
+          "schedule_end": "Schedule end time (HH:MM)",
+          "schedule_cap": "Schedule cap level (%)",
+          "cap_floor": "Minimum allowed cap (%)"
+        }
+      }
+    },
+    "error": {
+      "no_devices_selected": "You must select at least one device."
+    },
+    "abort": {
+      "no_devices_found": "No audio devices with volume control found in Home Assistant."
+    }
+  }
+}

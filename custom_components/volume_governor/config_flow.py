@@ -69,9 +69,10 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Step 1: Discover and select devices."""
-        # Only allow one instance
-        await self.async_set_unique_id(DOMAIN)
-        self._abort_if_unique_id_configured()
+        # Only allow one instance of the integration
+        existing = self._async_current_entries()
+        if existing:
+            return self.async_abort(reason="already_configured")
 
         self._discovered_devices = _discover_audio_devices(self.hass)
 

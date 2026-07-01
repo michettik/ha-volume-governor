@@ -83,6 +83,7 @@ class VolumeGovernorCoordinator:
         self._unsub_state: CALLBACK_TYPE | None = None
         self._unsub_lift_check: CALLBACK_TYPE | None = None
         self._enforcing: set[str] = set()
+        self._skip_reload: bool = False
 
     async def async_setup(self) -> None:
         """Set up the coordinator: register listeners."""
@@ -91,7 +92,8 @@ class VolumeGovernorCoordinator:
             entity_id = dev_conf[CONF_DEVICE_ENTITY_ID]
             name = dev_conf.get("name", entity_id)
             device = GovernedDevice(entity_id, name)
-            device.cap = self.default_cap
+            # Load per-device cap if stored, otherwise use global default
+            device.cap = dev_conf.get("cap", self.default_cap)
             self.devices[entity_id] = device
 
         # Listen for state changes on all governed entities
@@ -196,6 +198,9 @@ class VolumeGovernorCoordinator:
 
         device.engaged = True
 
+        # Clear any stale enforcing block from a prior disengage
+        self._enforcing.discard(entity_id)
+
         # Compute auto-lift time: next occurrence of schedule_end
         if not device.persistent:
             device.lift_at = self._compute_lift_time()
@@ -252,10 +257,12 @@ class VolumeGovernorCoordinator:
         )
 
     def set_cap(self, entity_id: str, cap: float) -> None:
-        """Update the cap value for a device."""
+        """Update the cap value for a device and persist to config entry."""
         device = self.devices.get(entity_id)
         if device:
             device.cap = max(cap, self.cap_floor)
+            # Persist to config entry so it survives restarts
+            self._persist_device_cap(entity_id, device.cap)
             # Re-enforce immediately if engaged and over new cap
             if device.engaged:
                 state = self.hass.states.get(entity_id)
@@ -265,6 +272,19 @@ class VolumeGovernorCoordinator:
                         self.hass.async_create_task(
                             self._async_enforce(entity_id, device.cap)
                         )
+
+    def _persist_device_cap(self, entity_id: str, cap: float) -> None:
+        """Write per-device cap back to config entry data (without triggering reload)."""
+        devices = list(self.entry.data.get(CONF_DEVICES, []))
+        for i, dev in enumerate(devices):
+            if dev[CONF_DEVICE_ENTITY_ID] == entity_id:
+                devices[i] = {**dev, "cap": cap}
+                break
+        new_data = {**self.entry.data, CONF_DEVICES: devices}
+        self._skip_reload = True
+        self.hass.config_entries.async_update_entry(
+            self.entry, data=new_data
+        )
 
     def get_status(self, entity_id: str) -> str:
         """Get human-readable status for a device."""

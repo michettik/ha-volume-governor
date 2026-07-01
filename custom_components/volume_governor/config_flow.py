@@ -134,9 +134,9 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> VolumeGovernorOptionsFlow:
+    ) -> config_entries.OptionsFlow:
         """Get the options flow."""
-        return VolumeGovernorOptionsFlow(config_entry)
+        return VolumeGovernorOptionsFlow()
 
     def _devices_schema(self) -> vol.Schema:
         """Build the device selection schema."""
@@ -173,9 +173,8 @@ class VolumeGovernorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class VolumeGovernorOptionsFlow(config_entries.OptionsFlow):
     """Handle options for Volume Governor (reconfigure)."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+    def __init__(self) -> None:
         """Initialize."""
-        self.config_entry = config_entry
         self._discovered_devices: dict[str, str] = {}
         self._selected_devices: list[str] = []
 

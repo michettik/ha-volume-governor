@@ -87,8 +87,15 @@ class VolumeGovernorCoordinator:
 
         self._unsub_state: CALLBACK_TYPE | None = None
         self._unsub_lift_check: CALLBACK_TYPE | None = None
+        self._unsub_helpers: CALLBACK_TYPE | None = None
         self._enforcing: set[str] = set()
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+
+    # Helper entity IDs for global settings
+    HELPER_GLOBAL_CAP = "input_number.volume_governor_global_cap"
+    HELPER_START_TIME = "input_text.volume_governor_start_time"
+    HELPER_END_TIME = "input_text.volume_governor_end_time"
+    HELPER_DAYS = "input_select.volume_governor_schedule_days"
 
     async def async_setup(self) -> None:
         """Set up the coordinator: register listeners."""
@@ -116,6 +123,17 @@ class VolumeGovernorCoordinator:
             self.hass, self._async_check_lifts, second=0
         )
 
+        # Listen for changes to global settings helpers
+        self._unsub_helpers = async_track_state_change_event(
+            self.hass,
+            [self.HELPER_GLOBAL_CAP, self.HELPER_START_TIME,
+             self.HELPER_END_TIME, self.HELPER_DAYS],
+            self._async_on_helper_change,
+        )
+
+        # Sync initial helper values into coordinator state
+        self._sync_from_helpers()
+
     async def async_teardown(self) -> None:
         """Tear down listeners."""
         if self._unsub_state:
@@ -124,6 +142,9 @@ class VolumeGovernorCoordinator:
         if self._unsub_lift_check:
             self._unsub_lift_check()
             self._unsub_lift_check = None
+        if self._unsub_helpers:
+            self._unsub_helpers()
+            self._unsub_helpers = None
 
     async def _async_save_caps(self) -> None:
         """Persist per-device caps to .storage file."""
@@ -301,6 +322,55 @@ class VolumeGovernorCoordinator:
                     if current is not None and current > device.cap:
                         self._enforcing.discard(entity_id)
                         self.hass.async_create_task(self._async_enforce(entity_id))
+
+    def _sync_from_helpers(self) -> None:
+        """Read current helper states into coordinator config."""
+        # Global cap
+        state = self.hass.states.get(self.HELPER_GLOBAL_CAP)
+        if state and state.state not in ("unknown", "unavailable"):
+            try:
+                self.default_cap = float(state.state) / 100.0
+            except (ValueError, TypeError):
+                pass
+
+        # Start time
+        state = self.hass.states.get(self.HELPER_START_TIME)
+        if state and state.state not in ("unknown", "unavailable"):
+            try:
+                self.schedule_start = _parse_time(state.state)
+            except (ValueError, IndexError):
+                pass
+
+        # End time
+        state = self.hass.states.get(self.HELPER_END_TIME)
+        if state and state.state not in ("unknown", "unavailable"):
+            try:
+                self.schedule_end = _parse_time(state.state)
+            except (ValueError, IndexError):
+                pass
+
+        # Schedule days
+        state = self.hass.states.get(self.HELPER_DAYS)
+        if state and state.state not in ("unknown", "unavailable"):
+            days_map = {
+                "Mon-Fri": [0, 1, 2, 3, 4],
+                "Mon-Sat": [0, 1, 2, 3, 4, 5],
+                "Every Day": [0, 1, 2, 3, 4, 5, 6],
+                "Weekends Only": [5, 6],
+            }
+            self.schedule_days = days_map.get(state.state, self.schedule_days)
+
+    @callback
+    def _async_on_helper_change(self, event: Event) -> None:
+        """React to global settings helper changes."""
+        self._sync_from_helpers()
+        _LOGGER.info(
+            "Volume Governor: global settings updated (cap=%d%%, days=%s, %s-%s)",
+            int(self.default_cap * 100),
+            self.schedule_days,
+            self.schedule_start.strftime("%H:%M"),
+            self.schedule_end.strftime("%H:%M"),
+        )
 
     def get_status(self, entity_id: str) -> str:
         """Get human-readable status for a device."""
